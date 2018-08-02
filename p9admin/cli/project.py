@@ -32,9 +32,10 @@ def show(name):
 
 @project.command("apply-quota-all")
 @click.option("--quota-name", "-n")
-@click.option("--quota-value", "-v")
-@click.option("--force", "-f")
-def apply_quota_all(quota_name, quota_value, force=False):
+@click.option("--quota-value", "-q")
+@click.option("--force/--no-force", default=False)
+@click.option("--defaults/--no-defaults", default=False)
+def apply_quota_all(quota_name, quota_value, force=False, defaults=False):
     """
 
     Apply a quota to all projects in the environment.
@@ -66,42 +67,33 @@ def apply_quota_all(quota_name, quota_value, force=False):
     """
     client = p9admin.OpenStackClient()
 
-    if "NOVA_URL" not in os.environ:
-        client.logger.critical("NOVA_URL environment variable must be set.  Check README.rst")
+    client.logger.info("Starting application of quotas to all projects")
+
+    if "OS_NOVA_URL" not in os.environ:
+        client.logger.critical("OS_NOVA_URL environment variable must be set.  Check README.rst")
+
+    projects = client.projects()
+
+    if defaults:
+        for project in projects:
+            p9admin.project.verified_apply_quota_defaults(client, project)
+            sleep(5)
+        sys.exit()
 
     validators.quota_name(quota_name)
     validators.quota_value(quota_name, quota_value)
 
-    projects = client.projects()
 
     for project in projects:
-
-        quota = p9admin.project.get_quota(client, project.id)
-
-        if int(quota_value) == int(json.loads(quota)["quota_set"][quota_name]):
-            print("Quota Already set for project {}".format(project.name.encode('utf-8')))
-            continue
-
-        if int(json.loads(quota)["quota_set"][quota_name]) == -1:
-            print("Quota for project {} set to unlimited, use apply-quota to lower")
-            continue
-
-        if int(quota_value) > int(json.loads(quota)["quota_set"][quota_name]):
-            print("Increasing quota {} from {} to {} on project {}".format(quota_name, json.loads(quota)["quota_set"][quota_name], quota_value, project.name.encode('utf-8')))
-            p9admin.project.apply_quota(client, project.id, quota_name, quota_value)
-        else:
-            if force:
-                print("Forcing application of quota {} to {} on project {}".format(quota_name, quota_value, project.name.encode('utf-8')))
-                p9admin.project.apply_quota(client, project.id, quota_name, quota_value)
-            else:
-                print("Application quota larger than new quota, use force to set lower.")
+        p9admin.project.verified_apply_quota(client, project, quota_name, quota_value)
 
 
 @project.command("apply-quota")
 @click.option("--project-name", "-p")
 @click.option("--quota-name", "-n")
-@click.option("--quota-value", "-v")
-def apply_quota(project_name, quota_name, quota_value):
+@click.option("--quota-value", "-q")
+@click.option("--defaults/--no-defaults", default=False)
+def apply_quota(project_name, quota_name, quota_value, defaults):
     """
 
     Apply a quota to a project
@@ -134,10 +126,16 @@ def apply_quota(project_name, quota_name, quota_value):
 
     client = p9admin.OpenStackClient()
 
-    if "NOVA_URL" not in os.environ:
-        client.logger.critical("NOVA_URL environment variable must be set.  Check README.rst")
+    if "OS_NOVA_URL" not in os.environ:
+        client.logger.critical("OS_NOVA_URL environment variable must be set.  Check README.rst")
 
     project = client.project_by_name(project_name)
+
+    if defaults:
+        if quota_name or quota_value:
+            client.logger.critical("Can't use defaults with quota_name or quota_value")
+        pprint.pprint(p9admin.project.apply_quota_defaults(client, project.id))
+        sys.exit()
 
     validators.quota_name(quota_name)
     validators.quota_value(quota_name, quota_value)
@@ -151,9 +149,8 @@ def get_quota(project_name):
     """ Get a list of quotas for a project """
     client = p9admin.OpenStackClient()
     project = client.project_by_name(project_name)
-    token = client.api_token()
 
-    pprint.pprint(p9admin.project.get_quota(token, project.id))
+    pprint.pprint(p9admin.project.get_quota(client, project.id))
 
 
 @project.command()

@@ -1,4 +1,5 @@
 from __future__ import print_function
+import configparser
 import json
 import keystoneauth1
 import logging
@@ -7,8 +8,6 @@ import os
 import pprint
 import requests
 import sys
-
-logger = logging.getLogger(__name__)
 
 def ensure_project(client, name, assume_complete=True):
     """
@@ -31,13 +30,13 @@ def ensure_project(client, name, assume_complete=True):
     # Create project
     try:
         project = client.keystone().projects.find(name=name)
-        logger.info('Found project "%s" [%s]', project.name, project.id)
+        client.logger.info('Found project "%s" [%s]', project.name, project.id)
         new_project = False
         if assume_complete:
             return project
     except keystoneauth1.exceptions.NotFound:
         project = client.keystone().projects.create(name=name, domain=DOMAIN)
-        logger.info('Created project "%s" [%s]', project.name, project.id)
+        client.logger.info('Created project "%s" [%s]', project.name, project.id)
         new_project = True
 
     # Create default network
@@ -86,7 +85,7 @@ def ensure_project(client, name, assume_complete=True):
 
 
 def get_quota(client, project_name):
-    nova_url = "{}/os-quota-sets/{}".format(os.environ.get("NOVA_URL"), project_name)
+    nova_url = "{}/os-quota-sets/{}".format(os.environ.get("OS_NOVA_URL"), project_name)
 
     header = {'X-AUTH-TOKEN': client.api_token(), 'Content-Type': 'application/json'}
 
@@ -100,9 +99,9 @@ def apply_quota(client, project_id, quota_name, quota_value):
     Apply a quota to an existing project
     """
 
-    nova_url = "{}/os-quota-sets/{}".format(os.environ.get("NOVA_URL"), project_id)
+    nova_url = "{}/os-quota-sets/{}".format(os.environ.get("OS_NOVA_URL"), project_id)
 
-    logger.info("About to set quota {} to {} on url {}".format(quota_name, quota_value, nova_url))
+    client.logger.info("About to set quota {} to {} on url {}".format(quota_name, quota_value, nova_url))
 
     header = {'X-AUTH-TOKEN': client.api_token(), 'Content-Type': 'application/json'}
     request_body = {"quota_set": {quota_name: quota_value}}
@@ -113,51 +112,66 @@ def apply_quota(client, project_id, quota_name, quota_value):
     return r.text
 
 
+def apply_quota_defaults(client, project_id):
+    """
+    Apply a quota to an existing project
+    """
+    config = configparser.ConfigParser()
+    config.read('conf/defaults.ini')
+
+    for key in config["DEFAULT"]:
+        print("Applying key {} with value {}".format(key, config["DEFAULT"][key]))
+        retval = apply_quota(client, project_id, key, config["DEFAULT"][key]) + "\n"
+
+    return retval
+
+
 def delete_project(client, name):
     ### FIXME: images?
     project = client.find_project(name)
-    logger.info('Started deleting project "%s" [%s]', project.name, project.id)
+    client.logger.info('Started deleting project "%s" [%s]', project.name, project.id)
 
     for server in client.servers(project_id=project.id):
         client.openstack().compute.delete_server(server, force=True, ignore_missing=True)
-        logger.info('  Deleted server "%s" [%s]', server.name, server.id)
+        client.logger.info('  Deleted server "%s" [%s]', server.name, server.id)
 
     for volume in client.volumes(project_id=project.id):
         client.openstack().block_storage.delete_volume(volume, ignore_missing=True)
-        logger.info('  Deleted volume "%s" [%s]', volume.name, volume.id)
+        client.logger.info('  Deleted volume "%s" [%s]', volume.name, volume.id)
 
     network_client = client.openstack().network
     routers = network_client.routers(project_id=project.id)
     for router in routers:
-        logger.info('  Started deleting router "%s" [%s]', router.name, router.id)
+        client.logger.info('  Started deleting router "%s" [%s]', router.name, router.id)
         for port in network_client.ports(device_id=router.id):
             network_client.remove_interface_from_router(router, port_id=port.id)
-            logger.info("    Removed port %s [%s]", port.device_owner, port.id)
+            client.logger.info("    Removed port %s [%s]", port.device_owner, port.id)
         network_client.delete_router(router, ignore_missing=True)
-        logger.info('    Finished deleting router')
+        client.logger.info('    Finished deleting router')
 
     networks = network_client.networks(project_id=project.id)
     for network in networks:
-        logger.info('  Started deleting network "%s" [%s]', network.name, network.id)
+        client.logger.info('  Started deleting network "%s" [%s]', network.name, network.id)
         subnets = client.subnets(project_id=project.id, network_id=network.id)
         for subnet in subnets:
             network_client.delete_subnet(subnet, ignore_missing=True)
-            logger.info('    Deleted subnet "%s" [%s]', subnet.name, subnet.id)
+            client.logger.info('    Deleted subnet "%s" [%s]', subnet.name, subnet.id)
         network_client.delete_network(network, ignore_missing=True)
-        logger.info('    Finished deleting network')
+        client.logger.info('    Finished deleting network')
 
     # The default security group is recreating when it's deleted, so we have
     # to delete the project first.
     security_groups = list(client.security_groups(project_id=project.id))
 
     client.keystone().projects.delete(project)
-    logger.info('  Deleted project itself')
+    client.logger.info('  Deleted project itself')
 
     for sg in security_groups:
         network_client.delete_security_group(sg, ignore_missing=True)
-        logger.info('  Deleted security group "%s" [%s]', sg.name, sg.id)
+        client.logger.info('  Deleted security group "%s" [%s]', sg.name, sg.id)
 
-    logger.info('  Finished deleting project')
+    client.logger.info('  Finished deleting project')
+
 
 def show_project(client, name):
     ### FIXME: images?
@@ -198,6 +212,7 @@ def show_project(client, name):
         print('  Server "{}" [{}] {}'.format(
             server.name, server.id, server.status))
 
+
 def print_fixed_ips(client, fixed_ips):
     for ip in fixed_ips:
         subnet = client.subnet(ip["subnet_id"])
@@ -233,3 +248,30 @@ def print_security_group_rule(client, rule):
     print("    {} {} {} {} on {}".format(
         rule.ether_type, protocol, direction, remote,
         port_range))
+
+
+def verified_apply_quota_defaults(client, project):
+    """ Apply defaults quotas, verifying that the quota won't be lowered first """
+    config = configparser.ConfigParser()
+    config.read('conf/defaults.ini')
+
+    for key in config["DEFAULT"]:
+        client.logger.info("Applying key {} with value {} to project {}".format(key, config["DEFAULT"][key], project.name.encode('utf-8')))
+        verified_apply_quota(client, project, key, config["DEFAULT"][key])
+
+
+def verified_apply_quota(client, project, quota_name, quota_value, force=False):
+    quota = get_quota(client, project.id)
+    if int(quota_value) == int(json.loads(quota)["quota_set"][quota_name]):
+        client.logger.info("Quota already set for project {}".format(project.name.encode('utf-8')))
+        return
+
+    if int(json.loads(quota)["quota_set"][quota_name]) == -1:
+        client.logger.info("Quota for project {} set to unlimited, use apply-quota to lower")
+        return
+
+    if int(quota_value) > int(json.loads(quota)["quota_set"][quota_name]):
+        client.logger.info("Increasing quota {} from {} to {} on project {}".format(quota_name, json.loads(quota)["quota_set"][quota_name], quota_value, project.name.encode('utf-8')))
+        apply_quota(client, project.id, quota_name, quota_value)
+    else:
+        client.logger.info("Application quota larger than new quota, use apply-quota to set lower.")
