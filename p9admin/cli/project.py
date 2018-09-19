@@ -86,7 +86,7 @@ def apply_quota_all(quota_name, quota_value, force=False):
             print("Quota for project {} set to unlimited, use apply-quota to lower")
             continue
 
-        if int(quota_value) > int(json.loads(quota)["quota_set"][quota_name]):
+        if int(quota_value) == -1 or int(quota_value) > int(json.loads(quota)["quota_set"][quota_name]):
             print("Increasing quota {} from {} to {} on project {}".format(quota_name, json.loads(quota)["quota_set"][quota_name], quota_value, project.name.encode('utf-8')))
             p9admin.project.apply_quota(client, project.id, quota_name, quota_value)
         else:
