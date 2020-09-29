@@ -1,7 +1,7 @@
 if [[ "$(docker images -q p9-admin 2> /dev/null)" != "" ]]; then
   img='p9-admin'
 else
-  img='pcr-internal.puppet.net/infracore/p9-admin:latest'
+  img='artifactory.delivery.puppetlabs.net/infracore/p9-admin:latest'
 fi
 
 docker run -it --rm \
