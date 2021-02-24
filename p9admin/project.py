@@ -5,7 +5,7 @@ import keystoneauth1
 import logging
 import operator
 import os
-import pprint
+import p9admin
 import requests
 import sys
 
@@ -98,10 +98,10 @@ def get_quota(client, project_name):
 
     r = requests.get(nova_url, headers=header, verify=True)
 
-    return r.text
+    return json.loads(r.text)
 
 
-def apply_quota(client, project_id, quota_name, quota_value):
+def _apply_quota(client, project_id, quota_name, quota_value):
     """
     Apply a quota to an existing project
     """
@@ -116,21 +116,7 @@ def apply_quota(client, project_id, quota_name, quota_value):
 
     r = requests.put(nova_url, headers=header, data=data_json, verify=True)
 
-    return r.text
-
-
-def apply_quota_defaults(client, project_id):
-    """
-    Apply a quota to an existing project
-    """
-    config = configparser.ConfigParser()
-    config.read('conf/defaults.ini')
-
-    for key in config["DEFAULT"]:
-        logger.debug("Applying key {} with value {}".format(key, config["DEFAULT"][key]))
-        retval = apply_quota(client, project_id, key, config["DEFAULT"][key]) + "\n"
-
-    return retval
+    return json.loads(r.text)
 
 
 def delete_project(client, name):
@@ -304,22 +290,30 @@ def verified_apply_quota_defaults(client, project):
     config.read('conf/defaults.ini')
 
     for key in config["DEFAULT"]:
-        logger.debug("Applying key {} with value {} to project {}".format(key, config["DEFAULT"][key], project.name))
-        verified_apply_quota(client, project, key, config["DEFAULT"][key])
+        logger.debug('Setting quota %s to %d to project "%s"',
+            key, config["DEFAULT"][key], project.name)
+        try:
+            verified_apply_quota(client, project, key, config["DEFAULT"][key])
+        except p9admin.RequiresForceError:
+            logger.warn('Existing quota %s for project "%s" is larger than new'
+                ' quota; doing nothing.', key, project.name)
 
 
 def verified_apply_quota(client, project, quota_name, quota_value, force=False):
     quota = get_quota(client, project.id)
-    if int(quota_value) == int(json.loads(quota)["quota_set"][quota_name]):
-        logger.info("Quota already set for project {}".format(project.name))
-        return
 
-    if int(json.loads(quota)["quota_set"][quota_name]) == -1:
-        logger.info("Quota for project {} set to unlimited, use apply-quota to lower")
-        return
+    new_value = int(quota_value)
+    old_value = int(quota["quota_set"][quota_name])
 
-    if int(quota_value) > int(json.loads(quota)["quota_set"][quota_name]):
-        logger.info("Increasing quota {} from {} to {} on project {}".format(quota_name, json.loads(quota)["quota_set"][quota_name], quota_value, project.name))
-        apply_quota(client, project.id, quota_name, quota_value)
+    if new_value == old_value:
+        logger.debug('Quota %s already set to %d on project "%s"', project.name, new_value)
+        return None
+
+    if new_value == -1 or new_value > old_value or force:
+        logger.debug('Changing quota %s from %d to %d on project "%s"',
+            quota_name, old_value, new_value, project.name)
+        return _apply_quota(client, project.id, quota_name, new_value)
     else:
-        logger.info("Application quota larger than new quota, use apply-quota to set lower.")
+        logger.debug('Existing quota %s on project "%s" is larger than %d;'
+            ' doing nothing', quota_name, project.name, new_value)
+        raise p9admin.RequiresForceError("Cannot lower quota without force=True")

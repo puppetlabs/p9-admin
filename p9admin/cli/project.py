@@ -5,7 +5,6 @@ import json
 import os
 import p9admin
 import p9admin.validators as validators
-import pprint
 import sys
 from time import sleep
 
@@ -82,14 +81,23 @@ def apply_quota_all(quota_name, quota_value, force=False, defaults=False):
 
     if defaults:
         for project in projects:
+            # This warns internally if a quota is larger than the default.
             p9admin.project.verified_apply_quota_defaults(client, project)
+
         sys.exit()
 
     validators.quota_name(quota_name)
     validators.quota_value(quota_name, quota_value)
 
     for project in projects:
-        p9admin.project.verified_apply_quota(client, project, quota_name, quota_value)
+        try:
+            p9admin.project.verified_apply_quota(
+                client, project, quota_name, quota_value)
+        except p9admin.RequiresForceError:
+            client.logger.warning(
+                "Skipping project %s because its quota %s is greater than"
+                " the requested quota. Use apply-quota --force.",
+                project, project.name)
 
 
 @project.command("apply-quota")
@@ -101,7 +109,7 @@ def apply_quota(project_name, quota_name, quota_value, defaults):
     """
     Apply a quota to a project.
 
-    quota_name is one of:
+    --quota-name is one of:
 
     instances
     ram
@@ -122,7 +130,7 @@ def apply_quota(project_name, quota_name, quota_value, defaults):
     routers
     root_gb
 
-    quota_value is a number, -1 for unlimited
+    quota-value is a number. Use -1 for unlimited.
     """
 
     client = p9admin.OpenStackClient()
@@ -134,14 +142,28 @@ def apply_quota(project_name, quota_name, quota_value, defaults):
 
     if defaults:
         if quota_name or quota_value:
-            sys.exit("Can't use defaults with quota_name or quota_value")
-        pprint.pprint(p9admin.project.apply_quota_defaults(client, project.id))
+            sys.exit("Can't use --defaults with --quota-name or --quota-value")
+        # This warns internally if a quota is larger than the default.
+        p9admin.project.verified_apply_quota_defaults(client, project.id)
         sys.exit()
 
     validators.quota_name(quota_name)
     validators.quota_value(quota_name, quota_value)
 
-    pprint.pprint(p9admin.project.apply_quota(client, project.id, quota_name, quota_value))
+    try:
+        quotas = p9admin.project.verified_apply_quota(client, project.id, quota_name, quota_value))
+    except p9admin.RequiresForceError:
+        client.logger.fatal(
+            "Not setting quota %s because it is greater than the requested"
+            " quota. Use --force.", project, project.name)
+
+    if quotas:
+        quotas_string = json.dumps(
+            quotas,
+            sort_keys=True,
+            indent=4,
+            separators=(',', ': '))
+        print(quotas_string)
 
 
 @project.command("get-quota")
@@ -154,7 +176,13 @@ def get_quota(project_name):
     client = p9admin.OpenStackClient()
     project = client.project_by_name(project_name)
 
-    pprint.pprint(p9admin.project.get_quota(client, project.id))
+    quotas = p9admin.project.get_quota(client, project.id)
+    quotas_string = json.dumps(
+        quotas,
+        sort_keys=True,
+        indent=4,
+        separators=(',', ': '))
+    print(quotas_string)
 
 
 @project.command()

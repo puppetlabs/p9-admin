@@ -27,5 +27,5 @@ def quota_name(quota_name):
 
 
 def quota_value(quota_name, quota_value):
-    if int(quota_value) > 1000000:
+    if quota_value > 1000000:
         sys.exit("A setting of '{}' for {} seems a bit unreasonable, don't you think?".format(quota_value, quota_name))
